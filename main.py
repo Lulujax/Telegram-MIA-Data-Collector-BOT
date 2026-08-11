@@ -1,6 +1,8 @@
 import os
 import csv
 import time
+import re
+import random
 import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 from typing import TypeVar, Generic
@@ -96,17 +98,29 @@ class CustomList(Generic[generic_type]):
         return self._list_size
 
 class SurveyQuestion:
-    def __init__(self, question_text: str, is_mandatory: bool):
+    def __init__(self, question_text: str, is_mandatory: bool, validation_regex: str = None, error_message: str = None, expected_type: str = 'text'):
         if not question_text:
             raise InvalidValueException()
         self._question_text = question_text
         self._is_mandatory = is_mandatory
+        self._validation_regex = validation_regex
+        self._error_message = error_message
+        self._expected_type = expected_type
 
     def get_question_text(self) -> str:
         return self._question_text
 
     def get_is_mandatory(self) -> bool:
         return self._is_mandatory
+        
+    def get_validation_regex(self) -> str:
+        return self._validation_regex
+        
+    def get_error_message(self) -> str:
+        return self._error_message
+
+    def get_expected_type(self) -> str:
+        return self._expected_type
 
 class SurveyAnswer:
     def __init__(self, answer_title: str, answer_value: str):
@@ -134,7 +148,7 @@ class DirectoryManager:
         user_path = os.path.join(self._root_directory, folder_name)
         if not os.path.exists(user_path):
             os.makedirs(user_path)
-            print(f"[SYSTEM] New folder created for user: {folder_name}")
+            print(f"[SYSTEM] Carpeta generada/verificada para el usuario: {folder_name}")
         return user_path
 
 class FileStorageManager:
@@ -149,11 +163,13 @@ class FileStorageManager:
         telegram_file_info = self._bot_client.get_file(file_id)
         downloaded_bytes = self._bot_client.download_file(telegram_file_info.file_path)
         extracted_extension = telegram_file_info.file_path.split('.')[-1]
-        generated_file_name = f"file_{file_id[-6:]}.{extracted_extension}"
+        time_stamp = str(int(time.time() * 1000))
+        random_suffix = str(random.randint(1000, 9999))
+        generated_file_name = f"media_{time_stamp}_{random_suffix}.{extracted_extension}"
         absolute_file_path = os.path.join(target_directory, generated_file_name)
         with open(absolute_file_path, 'wb') as local_file_descriptor:
             local_file_descriptor.write(downloaded_bytes)
-        print(f"[FILE] Successfully saved: {generated_file_name}")
+        print(f"[FILE] Archivo guardado correctamente en: {absolute_file_path}")
         return absolute_file_path
 
 class CsvRepository:
@@ -245,10 +261,11 @@ bot_access_token = "8117819271:AAGcvNgV8oh7jogS_eu5QtBmiA4myYoCglw"
 admin_chat_id = 250309338
 root_data_path = r"C:\BOT\User_Data"
 
-telegram_bot_client = telebot.TeleBot(bot_access_token)
+telegram_bot_client = telebot.TeleBot(bot_access_token, threaded=False)
 directory_manager = DirectoryManager(root_data_path)
 file_manager = FileStorageManager(telegram_bot_client)
 active_user_sessions = {}
+pending_admin_notifications = CustomQueue[str]()
 
 def resolve_user_display_name(telegram_user) -> str:
     if telegram_user.username is not None:
@@ -259,42 +276,37 @@ def resolve_user_display_name(telegram_user) -> str:
 
 def build_questions_catalog() -> CustomQueue[SurveyQuestion]:
     catalog_queue = CustomQueue[SurveyQuestion]()
-    catalog_queue.enqueue_item(SurveyQuestion("Укажите фамилию пропавшего", True))
-    catalog_queue.enqueue_item(SurveyQuestion("Имя", True))
-    catalog_queue.enqueue_item(SurveyQuestion("Отчество", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Дата рождения (в формате: ДД.ММ.ГГГГ)", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Номер воинской части (Номер воинской части состоит из 5 цифр. Введите только их. Например: 78567)", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Подразделение (Например: 155 бригада морской пехоты)", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Звание пропавшего без вести (Например: младший сержант)", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Позывной", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Номер жетона (например, АВ 434381)", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Национальная принадлежность (Например: бурят)", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Служба в ВС РФ (Например: Мобилизован/контрактник/ЧВК/пошел из тюрьмы)", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Номер моб. телефона пропавшего без вести (в формате: +х ххх ххх хххх)", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Примерная дата, когда пропал без вести (в формате: ДД.ММ.ГГГГ)", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Примерное место, где пропал без вести (Например: село Веселое, Донецкая область. Или геокоординаты в формате: 48.1850671, 37.7443646)", False))
-    
-    catalog_queue.enqueue_item(SurveyQuestion("Фотография пропавшего без вести (1/3). Пожалуйста, отправьте только 1 фото.", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Фотография пропавшего без вести (2/3). Пожалуйста, отправьте еще 1 фото. Если больше нет, нажмите 'Пропустить'.", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Фотография пропавшего без вести (3/3). Пожалуйста, отправьте еще 1 фото. Если больше нет, нажмите 'Пропустить'.", False))
-    
-    catalog_queue.enqueue_item(SurveyQuestion("Размер обуви", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Особые приметы (Опишите особенности человека, по которым возможно опознать останки: татуировки, шрамы, переломы, родинки, наличие протезирования зубов или конечностей, уникальные украшения и т.д)", False))
-    
-    catalog_queue.enqueue_item(SurveyQuestion("Фотография особых примет (1/3). Пожалуйста, отправьте только 1 фото.", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Фотография особых примет (2/3). Пожалуйста, отправьте еще 1 фото. Если больше нет, нажмите 'Пропустить'.", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Фотография особых примет (3/3). Пожалуйста, отправьте еще 1 фото. Если больше нет, нажмите 'Пропустить'.", False))
-    
-    catalog_queue.enqueue_item(SurveyQuestion("ДНК-профиль биологического родственника пропавшего без вести (родители, полнородные братья и сестры, дети, бабушки и дедушки) в формате фотографии или картинки jpg, png. Пожалуйста, отправьте 1 файл или фото.", False))
-    
-    catalog_queue.enqueue_item(SurveyQuestion("Дополнительная информация (Напишите все то, что может помочь в поиске вашего близкого)", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Кем вы приходитесь пропавшему без вести (родитель, супруг, брат/сестра, и т.д)", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Ваша фамилия", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Ваше имя", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Ваше отчество", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Ваш контактный номер телефона для обратной связи (в формате: +х ххх ххх хххх)", True))
-    catalog_queue.enqueue_item(SurveyQuestion("Укажите из какого вы региона РФ", False))
-    catalog_queue.enqueue_item(SurveyQuestion("Укажите ваше место работы", False))
+    catalog_queue.enqueue_item(SurveyQuestion("👤 Укажите фамилию пропавшего", True))
+    catalog_queue.enqueue_item(SurveyQuestion("👤 Имя", True))
+    catalog_queue.enqueue_item(SurveyQuestion("👤 Отчество", False))
+    catalog_queue.enqueue_item(SurveyQuestion("📅 Дата рождения (в формате: ДД/ММ/ГГГГ)", False, r"^\d{2}/\d{2}/\d{4}$", "⚠️ Неверный формат. Используйте ДД/ММ/ГГГГ (например, 15/05/1990)."))
+    catalog_queue.enqueue_item(SurveyQuestion("🪖 Номер воинской части (Номер состоит из 5 цифр. Введите только их. Например: 78567)", False, r"^\d{5}$", "⚠️ Введите ровно 5 цифр."))
+    catalog_queue.enqueue_item(SurveyQuestion("🏢 Подразделение (Например: 155 бригада морской пехоты)", False))
+    catalog_queue.enqueue_item(SurveyQuestion("🎖 Звание пропавшего без вести (Например: младший сержант)", False))
+    catalog_queue.enqueue_item(SurveyQuestion("🗣 Позывной", False))
+    catalog_queue.enqueue_item(SurveyQuestion("🏷 Номер жетона (например, АВ 434381)", False))
+    catalog_queue.enqueue_item(SurveyQuestion("🇷🇺 Национальная принадлежность (Например: бурят)", False))
+    catalog_queue.enqueue_item(SurveyQuestion("🛡 Служба в ВС РФ (Например: Мобилизован/контрактник/ЧВК/пошел из тюрьмы)", False))
+    catalog_queue.enqueue_item(SurveyQuestion("📞 Номер моб. телефона пропавшего без вести (в формате: +х ххх ххх хххх)", False, r"^\+[0-9\s]{10,20}$", "⚠️ Неверный формат. Начните с '+' и введите правильный номер."))
+    catalog_queue.enqueue_item(SurveyQuestion("📅 Примерная дата, когда пропал без вести (в формате: ДД/ММ/ГГГГ)", False, r"^\d{2}/\d{2}/\d{4}$", "⚠️ Неверный формат. Используйте ДД/ММ/ГГГГ."))
+    catalog_queue.enqueue_item(SurveyQuestion("📍 Примерное место, где пропал без вести (Например: село Веселое. Или координаты: 48.1850, 37.7443)", False))
+    catalog_queue.enqueue_item(SurveyQuestion("📸 Фотография пропавшего без вести (1/3). Пожалуйста, отправьте только 1 фото.", False, None, None, 'photo'))
+    catalog_queue.enqueue_item(SurveyQuestion("📸 Фотография пропавшего без вести (2/3). Пожалуйста, отправьте еще 1 фото. Если больше нет, нажмите 'Пропустить'.", False, None, None, 'photo'))
+    catalog_queue.enqueue_item(SurveyQuestion("📸 Фотография пропавшего без вести (3/3). Пожалуйста, отправьте еще 1 фото. Если больше нет, нажмите 'Пропустить'.", False, None, None, 'photo'))
+    catalog_queue.enqueue_item(SurveyQuestion("👞 Размер обуви", False))
+    catalog_queue.enqueue_item(SurveyQuestion("👁 Особые приметы (Опишите особенности: татуировки, шрамы, переломы, родинки, протезы и т.д)", False))
+    catalog_queue.enqueue_item(SurveyQuestion("📸 Фотография особых примет (1/3). Пожалуйста, отправьте только 1 фото.", False, None, None, 'photo'))
+    catalog_queue.enqueue_item(SurveyQuestion("📸 Фотография особых примет (2/3). Пожалуйста, отправьте еще 1 фото. Если больше нет, нажмите 'Пропустить'.", False, None, None, 'photo'))
+    catalog_queue.enqueue_item(SurveyQuestion("📸 Фотография особых примет (3/3). Пожалуйста, отправьте еще 1 фото. Если больше нет, нажмите 'Пропустить'.", False, None, None, 'photo'))
+    catalog_queue.enqueue_item(SurveyQuestion("🧬 ДНК-профиль биологического родственника (фотография или картинка jpg, png).", False, None, None, 'photo'))
+    catalog_queue.enqueue_item(SurveyQuestion("📝 Дополнительная информация (Все то, что может помочь в поиске)", False))
+    catalog_queue.enqueue_item(SurveyQuestion("🤝 Кем вы приходитесь пропавшему без вести (родитель, супруг, брат/сестра, и т.д)", False))
+    catalog_queue.enqueue_item(SurveyQuestion("👤 Ваша фамилия", False))
+    catalog_queue.enqueue_item(SurveyQuestion("👤 Ваше имя", False))
+    catalog_queue.enqueue_item(SurveyQuestion("👤 Ваше отчество", False))
+    catalog_queue.enqueue_item(SurveyQuestion("📞 Ваш контактный номер телефона для обратной связи (в формате: +х ххх ххх хххх)", True, r"^\+[0-9\s]{10,20}$", "⚠️ Неверный формат. Начните с '+' и введите правильный номер."))
+    catalog_queue.enqueue_item(SurveyQuestion("🌍 Укажите из какого вы региона РФ", False))
+    catalog_queue.enqueue_item(SurveyQuestion("💼 Укажите ваше место работы", False))
     return catalog_queue
 
 def create_skip_keyboard() -> ReplyKeyboardMarkup:
@@ -303,12 +315,29 @@ def create_skip_keyboard() -> ReplyKeyboardMarkup:
     keyboard_layout.add(skip_button)
     return keyboard_layout
 
-def create_final_action_keyboard() -> InlineKeyboardMarkup:
+def create_final_action_keyboard(include_operator_button: bool) -> InlineKeyboardMarkup:
     action_keyboard = InlineKeyboardMarkup(row_width=1)
-    operator_button = InlineKeyboardButton(text="📞 Связь с оператором", url=f"tg://user?id={admin_chat_id}")
     restart_button = InlineKeyboardButton(text="➕ Новая заявка", callback_data="trigger_restart")
-    action_keyboard.add(operator_button, restart_button)
+    if include_operator_button:
+        operator_button = InlineKeyboardButton(text="📞 Связь с оператором", url=f"tg://user?id={admin_chat_id}")
+        action_keyboard.add(operator_button, restart_button)
+    else:
+        action_keyboard.add(restart_button)
     return action_keyboard
+
+def flush_admin_notifications():
+    temp_queue = CustomQueue[str]()
+    while not pending_admin_notifications.is_queue_empty():
+        target_message = pending_admin_notifications.dequeue_item()
+        try:
+            telegram_bot_client.send_message(admin_chat_id, target_message)
+            print(f"[SYSTEM] Notificación despachada correctamente desde la cola hacia el admin {admin_chat_id}.")
+        except Exception as dispatch_error:
+            temp_queue.enqueue_item(target_message)
+            print(f"[WARNING] Fallo al enviar notificación en cola. Se reintentará luego. Motivo: {dispatch_error}")
+            
+    while not temp_queue.is_queue_empty():
+        pending_admin_notifications.enqueue_item(temp_queue.dequeue_item())
 
 def prompt_next_survey_question(chat_id_value: int, user_session: UserSessionState):
     next_question = user_session.pull_next_question()
@@ -334,31 +363,39 @@ def conclude_survey_process(chat_id_value: int, user_session: UserSessionState):
             cleanup_message, 
             reply_markup=remove_keyboard_markup
         )
+    except Exception:
+        pass
         
-        final_message_text = "Ваша заявка на поиск принята. В связи с большим количеством обращений, срок предоставления ответа может быть больше 14 дней. ❗️ Не подавайте заявку на поиск одного и того же человека несколько раз. Это только увеличит время ответа."
-        telegram_bot_client.send_message(
-            chat_id_value, 
-            final_message_text, 
-            reply_markup=create_final_action_keyboard()
-        )
-        
+    try:
         user_specific_csv = os.path.join(user_session.get_user_directory_path(), "user_data.csv")
         user_csv_repository = CsvRepository(user_specific_csv)
-        
         extracted_data_list = user_session.export_answers_to_list()
         extracted_headers_list = user_session.export_headers_to_list()
         user_csv_repository.create_data_record(extracted_data_list, extracted_headers_list)
-        print(f"[SUCCESS] User {user_session.get_session_username()} completed and saved the form.")
-        
+        print(f"[SUCCESS] CSV guardado exitosamente para el usuario: {user_session.get_session_username()}")
     except Exception as data_error:
-        print(f"[ERROR] Failed to finalize data for user {user_session.get_session_username()}: {data_error}")
+        print(f"[ERROR CRÍTICO] Falló la exportación CSV para el usuario {user_session.get_session_username()}: {data_error}")
         
+    final_message_text = "✅ Ваша заявка на поиск принята. Срок предоставления ответа может быть больше 14 дней. ❗️ Не подавайте заявку на поиск одного и того же человека несколько раз."
     try:
-        admin_notification_text = user_session.format_short_admin_notification()
-        telegram_bot_client.send_message(admin_chat_id, admin_notification_text)
-        print(f"[SYSTEM] Admin notified successfully for user {user_session.get_session_username()}.")
-    except Exception as admin_error:
-        print(f"[WARNING] Could not notify Admin ID {admin_chat_id}. Did the admin send /start to the bot? Error details: {admin_error}")
+        telegram_bot_client.send_message(
+            chat_id_value, 
+            final_message_text, 
+            reply_markup=create_final_action_keyboard(True)
+        )
+    except Exception:
+        try:
+            telegram_bot_client.send_message(
+                chat_id_value, 
+                final_message_text, 
+                reply_markup=create_final_action_keyboard(False)
+            )
+        except Exception:
+            pass
+        
+    admin_notification_text = user_session.format_short_admin_notification()
+    pending_admin_notifications.enqueue_item(admin_notification_text)
+    flush_admin_notifications()
     
     if chat_id_value in active_user_sessions:
         del active_user_sessions[chat_id_value]
@@ -366,50 +403,49 @@ def conclude_survey_process(chat_id_value: int, user_session: UserSessionState):
 def initiate_survey_for_user(chat_id_value: int, session_username: str):
     user_directory_path = directory_manager.prepare_user_directory(chat_id_value, session_username)
     new_user_session = UserSessionState(chat_id_value, session_username, user_directory_path)
-    
     questions_queue = build_questions_catalog()
     new_user_session.load_survey_questions(questions_queue)
-    
     active_user_sessions[chat_id_value] = new_user_session
     prompt_next_survey_question(chat_id_value, new_user_session)
 
 @telegram_bot_client.message_handler(commands=['start'])
 def handle_bot_start(incoming_message):
+    flush_admin_notifications()
     user_chat_id = incoming_message.chat.id
     session_username = resolve_user_display_name(incoming_message.from_user)
-    
-    print(f"[NEW USER] User interacting: {session_username} (ID: {user_chat_id})")
-    
+    print(f"[NEW USER] Inicio de interacción: {session_username} (ID: {user_chat_id})")
     welcome_text = "Здравствуйте. Пожалуйста, представьтесь и подробно заполните анкету, после с вами свяжется оператор."
-    
     try:
         telegram_bot_client.send_message(user_chat_id, welcome_text)
     except Exception:
         return
-        
     initiate_survey_for_user(user_chat_id, session_username)
 
 @telegram_bot_client.callback_query_handler(func=lambda call_event: call_event.data == "trigger_restart")
 def handle_survey_restart(call_event):
+    flush_admin_notifications()
     user_chat_id = call_event.message.chat.id
     session_username = resolve_user_display_name(call_event.from_user)
-    
-    print(f"[RESTART] User requested a new survey form: {session_username} (ID: {user_chat_id})")
-    
+    print(f"[RESTART] Petición de nuevo formulario desde: {session_username} (ID: {user_chat_id})")
     try:
         telegram_bot_client.answer_callback_query(call_event.id)
         restart_message = "Новая анкета. Пожалуйста, заполните данные внимательно."
         telegram_bot_client.send_message(user_chat_id, restart_message)
     except Exception:
         pass
-        
     initiate_survey_for_user(user_chat_id, session_username)
 
 @telegram_bot_client.message_handler(content_types=['text', 'photo', 'document'])
 def handle_user_survey_input(incoming_message):
+    flush_admin_notifications()
     user_chat_id = incoming_message.chat.id
-    
     if user_chat_id not in active_user_sessions:
+        try:
+            expire_msg = "⚠️ Сессия истекла или бот был перезагружен. Пожалуйста, отправьте /start, чтобы начать заново."
+            telegram_bot_client.send_message(user_chat_id, expire_msg)
+            print(f"[WARNING] Usuario sin sesión ({user_chat_id}) intentó interactuar. Solicitando /start.")
+        except Exception:
+            pass
         return
         
     current_session = active_user_sessions[user_chat_id]
@@ -419,6 +455,7 @@ def handle_user_survey_input(incoming_message):
         return
 
     extracted_value = ""
+    expected_type = active_question.get_expected_type()
     
     if incoming_message.content_type == 'text':
         if incoming_message.text == "Не знаете? Нажмите, чтобы пропустить":
@@ -432,11 +469,42 @@ def handle_user_survey_input(incoming_message):
                     pass
                 return
             extracted_value = "Пропущено"
-            print(f"[INFO] User {current_session.get_session_username()} skipped a question.")
+            print(f"[INFO] {current_session.get_session_username()} saltó una pregunta.")
         else:
+            if expected_type == 'photo':
+                photo_error_message = "📸 ⚠️ Ошибка: Пожалуйста, отправьте фотографию (или документ), либо нажмите кнопку 'Пропустить'."
+                try:
+                    telegram_bot_client.send_message(user_chat_id, photo_error_message)
+                    current_session.push_question_back(active_question)
+                    prompt_next_survey_question(user_chat_id, current_session)
+                except Exception:
+                    pass
+                return
+                
             extracted_value = incoming_message.text
+            regex_pattern = active_question.get_validation_regex()
+            if regex_pattern is not None:
+                if not re.search(regex_pattern, extracted_value):
+                    error_msg = active_question.get_error_message()
+                    try:
+                        telegram_bot_client.send_message(user_chat_id, error_msg)
+                        current_session.push_question_back(active_question)
+                        prompt_next_survey_question(user_chat_id, current_session)
+                    except Exception:
+                        pass
+                    return
             
     elif incoming_message.content_type in ['photo', 'document']:
+        if expected_type == 'text':
+            text_error_message = "📝 ⚠️ Ошибка: Пожалуйста, отправьте текстовое сообщение."
+            try:
+                telegram_bot_client.send_message(user_chat_id, text_error_message)
+                current_session.push_question_back(active_question)
+                prompt_next_survey_question(user_chat_id, current_session)
+            except Exception:
+                pass
+            return
+            
         try:
             if incoming_message.content_type == 'photo':
                 target_file_id = incoming_message.photo[-1].file_id
@@ -445,8 +513,9 @@ def handle_user_survey_input(incoming_message):
                 
             saved_file_path = file_manager.process_and_save_telegram_file(target_file_id, current_session.get_user_directory_path())
             extracted_value = saved_file_path
-        except Exception:
+        except Exception as e:
             extracted_value = "[Error_Saving_Media]"
+            print(f"[ERROR] No se pudo guardar la imagen: {str(e)}")
 
     try:
         current_session.store_user_answer(extracted_value)
@@ -455,12 +524,12 @@ def handle_user_survey_input(incoming_message):
         pass
 
 if __name__ == "__main__":
-    print("[SYSTEM] Starting bot server...")
-    print("[SYSTEM] Folder structure configured in C:\\BOT\\User_Data")
-    print("[SYSTEM] Callbacks initialized. Bot online and waiting for users.\n")
+    print("[SYSTEM] Servidor del bot iniciado...")
+    print("[SYSTEM] Estructura de carpetas configurada en C:\\BOT\\User_Data")
+    print("[SYSTEM] Callbacks iniciados. Esperando usuarios de Telegram...\n")
     while True:
         try:
             telegram_bot_client.polling(none_stop=True)
         except Exception as system_error:
-            print(f"[ERROR] API conflict or network drop. Reconnecting in 5 seconds...")
+            print(f"[ERROR CRÍTICO] Conflicto de API o corte de red detectado. Reconectando en 5 segundos... Error: {system_error}")
             time.sleep(5)
